@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>RPM Viseme Player — Wolf3D_Head + idle motion</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --bg:#0b0c0d; --panel:#0f1316; --accent:#1f6feb; color-scheme: dark; }
+    html,body{height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,Arial;color:#e6eef8;}
+    #ui{position:fixed;left:12px;top:12px;z-index:30;background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));padding:12px;border-radius:10px;width:360px;box-shadow:0 10px 30px rgba(0,0,0,0.6)}
+    input[type=text], input[type=file], select { width:100%; padding:8px; border-radius:6px; border:1px solid rgba(255,255,255,0.06); background:#0a0b0c; color: #e6eef8 }
+    button { background:var(--accent); border:0; padding:8px 10px; color:white; border-radius:8px; cursor:pointer; margin-top:8px }
+    .row { display:flex; gap:8px; }
+    small { color:#98a1b3; display:block; margin-top:6px }
+    #log { max-height:120px; overflow:auto; background:#060708; padding:8px; margin-top:8px; border-radius:6px; font-size:12px; color:#9fb0c8 }
+  </style>
+
+  <!-- importmap to resolve three & addons -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.153.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="ui">
+    <h3 style="margin:0 0 8px 0">RPM Viseme Player</h3>
+
+    <label>Avatar GLB URL (or leave blank and use file chooser)</label>
+    <input id="glbUrl" placeholder="https://models.readyplayer.me/xxxxx.glb" />
+    <div class="row" style="margin-top:8px">
+      <button id="loadUrlBtn">Load URL</button>
+      <input id="glbFile" type="file" accept=".glb,.gltf" />
+    </div>
+
+    <hr style="border-color: rgba(255,255,255,0.04); margin:10px 0">
+
+    <label>Viseme JSON (.json) — format: { "events":[ { "t":0, "v":"viseme_aa", "i":0.9, "d":180 }, ... ] }</label>
+    <input id="jsonFile" type="file" accept=".json" />
+    <div class="row">
+      <button id="loadSampleJson">Load sample JSON</button>
+      <button id="downloadSampleJson">Download sample</button>
+    </div>
+
+    <div style="margin-top:8px" class="row">
+      <button id="playVisemes">Play</button>
+      <button id="stopVisemes">Stop</button>
+      <label style="display:flex;align-items:center;"><input id="loopVisemes" type="checkbox" style="margin-right:6px"> Loop</label>
+    </div>
+
+    <small>Behavior: plays viseme sequence on <strong>Wolf3D_Head</strong> morphs and continues natural idle motion (head, hands, eyes).</small>
+
+    <div id="log" aria-live="polite"></div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+    // ---------- Scene setup ----------
+    const canvas = document.getElementById('canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(innerWidth, innerHeight);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x141619);
+
+    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
+    camera.position.set(0, 1.4, 2.7);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0,1.4,0);
+    controls.update();
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
+    hemi.position.set(0, 1, 0);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(1,2,1);
+    scene.add(dir);
+    const grid = new THREE.GridHelper(6, 12, 0x3b3f44, 0x222425);
+    grid.position.y = 0;
+    scene.add(grid);
+
+    // ---------- State ----------
+    let model = null;
+    let mixer = null;
+    let clock = new THREE.Clock(false);
+
+    // Wolf3D head morphs
+    let wolfMesh = null;
+    let wolfDict = null; // name -> index
+    let morphInfluences = null;
+
+    // bones
+    let headBone = null, spineBone = null, leftHandBone = null, rightHandBone = null;
+
+    // custom animation states
+    let running = false;
+    const headState = { targetYaw:0, targetPitch:0, yaw:0, pitch:0, lerp:0.07 };
+    const breathState = { t:0 };
+    const handState = { left:{active:false, from:0, to:0, dur:0, t:0}, right:{active:false, from:0, to:0, dur:0, t:0} };
+    let eyeBlinkTimer = 0;
+
+    // viseme playback state
+    let visemeSequence = null; // {events: [ {t(ms), v(name), i(intensity 0..1), d(duration ms)} ], name?}
+    let visemeStartTime = 0;
+    let visemePlaying = false;
+    let visemeLoop = false;
+    let visemeIndex = 0; // next event to trigger
+    let visemeTasks = []; // active tasks with decay
+
+    // loader
+    const loader = new GLTFLoader();
+
+    // ---------- UI refs ----------
+    const logEl = document.getElementById('log');
+    function log(msg){
+      const line = document.createElement('div'); line.textContent = msg;
+      logEl.prepend(line);
+      // keep a small log length
+      while(logEl.childElementCount > 80) logEl.removeChild(logEl.lastChild);
+      console.debug(msg);
+    }
+
+    // ---------- helper utilities ----------
+    function r(min,max){ return min + Math.random() * (max - min); }
+
+    function findBoneByNames(root, candidates){
+      let found = null;
+      root.traverse(o=>{
+        if(found) return;
+        if(o.isBone){
+          const n = (o.name||'').toLowerCase();
+          for(const c of candidates) if(n.includes(c)) { found = o; break; }
+        }
+      });
+      return found;
+    }
+
+    function findHandBones(root){
+      let left=null, right=null;
+      root.traverse(o=>{
+        if(!o.isBone) return;
+        const n = (o.name||'').toLowerCase();
+        if(!left && (n.includes('left') && (n.includes('hand') || n.includes('wrist') || n.includes('_l') || n.includes('.l')))) left = o;
+        if(!right && (n.includes('right') && (n.includes('hand') || n.includes('wrist') || n.includes('_r') || n.includes('.r')))) right = o;
+      });
+      return {left,right};
+    }
+
+    // ---------- scheduling natural behavior ----------
+    function scheduleHeadTarget(){
+      headState.targetYaw = r(-0.6, 0.6);
+      headState.targetPitch = r(-0.2, 0.25);
+      setTimeout(scheduleHeadTarget, r(1600, 3800));
+    }
+
+    function scheduleHandGesture(){
+      const which = Math.random() < 0.5 ? 'left' : 'right';
+      const s = handState[which];
+      s.active = true;
+      s.from = s.beg || 0;
+      s.to = r(-0.9, 0.9);
+      s.dur = r(320, 900);
+      s.t = 0;
+      s.beg = s.to;
+      if(Math.random() < 0.15) setTimeout(scheduleHandGesture, r(140, 400));
+      setTimeout(scheduleHandGesture, r(500, 2400));
+    }
+
+    function scheduleVisemeBurstRandom(){
+      // small random bursts so idle isn't silent (only apply if no visemeSequence loaded)
+      if(visemeSequence === null){
+        // pick a random viseme from wolfDict if available
+        const names = wolfDict ? Object.keys(wolfDict).filter(n => n.toLowerCase().startsWith('viseme') || n.toLowerCase().includes('jaw') || n.toLowerCase().includes('mouth')) : [];
+        if(names.length){
+          const burstLen = Math.floor(r(2,6));
+          let t = 0;
+          for(let i=0;i<burstLen;i++){
+            setTimeout(()=>{
+              const nm = names[Math.floor(Math.random()*names.length)];
+              visemeTasks.push({name:nm, intensity:r(0.3,0.95), timeLeft:r(120,420), decay:0.01 + Math.random()*0.02});
+            }, t);
+            t += r(60,160);
+          }
+        }
+      }
+      setTimeout(scheduleVisemeBurstRandom, r(1200, 5400));
+    }
+
+    // ---------- viseme playback (from loaded JSON) ----------
+    // expected JSON shape:
+    // { "name":"sample", "events":[ {"t":0,"v":"viseme_aa","i":0.9,"d":160}, ... ] }
+    // t is milliseconds from start.
+    function loadVisemeSequence(obj){
+      if(!obj || !Array.isArray(obj.events)) { log('Invalid viseme JSON format. Expect {events:[...]}.'); return; }
+      // sort events by time just in case
+      obj.events.sort((a,b)=>a.t - b.t);
+      visemeSequence = obj;
+      log('Viseme sequence loaded: ' + (obj.name || 'unnamed') + ' (' + obj.events.length + ' events)');
+    }
+
+    function playVisemeSequence(loop=false){
+      if(!visemeSequence){ log('No viseme sequence loaded.'); return; }
+      visemeLoop = loop;
+      visemeIndex = 0;
+      visemeTasks.length = 0;
+      visemeStartTime = performance.now();
+      visemePlaying = true;
+      log('Viseme playback started' + (loop ? ' (looping)' : ''));
+    }
+
+    function stopVisemePlayback(){
+      visemePlaying = false;
+      // don't clear morphs immediately — let decay handle it, but you can choose to reset:
+      // if(wolfMesh && wolfMesh.morphTargetInfluences) wolfMesh.morphTargetInfluences.fill(0);
+      log('Viseme playback stopped');
+    }
+
+    // ---------- applying viseme events per frame ----------
+    function updateVisemePlayer(dt){
+      // trigger scheduled events from visemeSequence
+      if(visemePlaying && visemeSequence){
+        const now = performance.now();
+        const elapsed = now - visemeStartTime;
+        while(visemeIndex < visemeSequence.events.length && visemeSequence.events[visemeIndex].t <= elapsed){
+          const ev = visemeSequence.events[visemeIndex];
+          // push a task (it will be applied and decayed in updateVisemes)
+          visemeTasks.push({
+            name: ev.v,
+            intensity: typeof ev.i === 'number' ? Math.min(1, Math.max(0, ev.i)) : 1.0,
+            timeLeft: typeof ev.d === 'number' ? ev.d : 150,
+            decay: (typeof ev.decay === 'number') ? ev.decay : 0.01
+          });
+          visemeIndex++;
+        }
+        if(visemeIndex >= visemeSequence.events.length && visemePlaying){
+          if(visemeLoop){
+            // restart
+            visemeIndex = 0;
+            visemeStartTime = performance.now();
+          } else {
+            // done
+            visemePlaying = false;
+            log('Viseme sequence finished');
+          }
+        }
+      }
+
+      // apply active tasks: set morph influences and decay them in time
+      if(wolfMesh && wolfDict){
+        // gently decay all morphs globally so they don't stick
+        const influences = wolfMesh.morphTargetInfluences;
+        for(let i=0;i<influences.length;i++){
+          influences[i] = Math.max(0, influences[i] - 0.02 * dt * 60);
+        }
+        // apply tasks (set to max of current and requested intensity)
+        for(let i = visemeTasks.length - 1; i >= 0; i--){
+          const t = visemeTasks[i];
+          const idx = getMorphIndexForName(t.name);
+          if(typeof idx === 'number'){
+            influences[idx] = Math.max(influences[idx] || 0, t.intensity);
+          }
+          // progress & decay the task
+          t.timeLeft -= dt * 1000;
+          t.intensity = Math.max(0, t.intensity - t.decay * (dt * 60));
+          if(t.timeLeft <= 0 || t.intensity <= 0.01) visemeTasks.splice(i,1);
+        }
+      }
+    }
+
+    function getMorphIndexForName(name){
+      if(!wolfDict) return undefined;
+      // case-insensitive match; allow variants like 'AA' or 'viseme_aa'
+      const lower = (name||'').toLowerCase();
+      if(wolfDict[lower] !== undefined) return wolfDict[lower];
+      // sometimes names in dict are lowercase already, so attempt direct
+      const keys = Object.keys(wolfDict);
+      for(const k of keys){
+        if(k.toLowerCase() === lower) return wolfDict[k];
+      }
+      // also try prefixing 'viseme_' if missing
+      if(!lower.startsWith('viseme_') && wolfDict['viseme_' + lower] !== undefined) return wolfDict['viseme_' + lower];
+      return undefined;
+    }
+
+    // ---------- natural motions updates ----------
+    function updateHead(dt){
+      if(!headBone) return;
+      headState.yaw = THREE.MathUtils.lerp(headState.yaw, headState.targetYaw, headState.lerp);
+      headState.pitch = THREE.MathUtils.lerp(headState.pitch, headState.targetPitch, headState.lerp);
+      // breathing bob on spine
+      breathState.t += dt * 0.9;
+      const bob = Math.sin(breathState.t * 0.9) * 0.015;
+      if(spineBone) spineBone.rotation.x = bob;
+      headBone.rotation.y = headState.yaw;
+      headBone.rotation.x = headState.pitch;
+    }
+
+    function updateHands(dt){
+      const apply = (bone, state)=>{
+        if(!bone || !state) return;
+        if(state.active){
+          state.t += dt * 1000;
+          const alpha = Math.min(1, state.t / state.dur);
+          const eased = alpha*alpha*(3-2*alpha);
+          const val = THREE.MathUtils.lerp(state.from, state.to, eased);
+          bone.rotation.x = val;
+          if(alpha >= 1) state.active = false;
+        } else {
+          bone.rotation.x = THREE.MathUtils.lerp(bone.rotation.x, 0, dt*2.6);
+        }
+      };
+      apply(leftHandBone, handState.left);
+      apply(rightHandBone, handState.right);
+    }
+
+    function updateEyesAndBlink(dt){
+      // eye blink: periodically close both eyes if morph exists
+      eyeBlinkTimer -= dt * 1000;
+      if(eyeBlinkTimer <= 0){
+        // schedule a blink
+        const delay = r(2.0, 6.0) * 1000;
+        eyeBlinkTimer = delay;
+        // quick blink task
+        if(wolfDict && (wolfDict.eyeBlinkLeft !== undefined || wolfDict.eyeBlinkRight !== undefined)){
+          const leftIdx = getMorphIndexForName('eyeBlinkLeft');
+          const rightIdx = getMorphIndexForName('eyeBlinkRight');
+          if(leftIdx !== undefined || rightIdx !== undefined){
+            // short strong blink
+            visemeTasks.push({ name: 'eyeBlinkLeft', intensity: 1.0, timeLeft: 120, decay: 0.03 });
+            visemeTasks.push({ name: 'eyeBlinkRight', intensity: 1.0, timeLeft: 120, decay: 0.03 });
+          }
+        }
+      }
+
+      // gentle eye look movement simulated with small head target nudges occasionally
+      // (we already have headTarget schedule; tiny mouse/auto-look could be added)
+    }
+
+    // ---------- animation loop ----------
+    function animate(){
+      if(!running) return;
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+      if(mixer) mixer.update(dt);
+      updateHead(dt);
+      updateHands(dt);
+      updateEyesAndBlink(dt);
+      updateVisemePlayer(dt);
+      renderer.render(scene, camera);
+    }
+
+    // ---------- model loading & detection ----------
+    function clearModel(){
+      if(model) {
+        scene.remove(model);
+        model.traverse(o=>{
+          if(o.geometry) o.geometry.dispose();
+          if(o.material){
+            if(Array.isArray(o.material)) o.material.forEach(m=>m.dispose());
+            else o.material.dispose();
+          }
+        });
+      }
+      model = null; mixer = null; wolfMesh = null; wolfDict = null; morphInfluences = null;
+      headBone = spineBone = leftHandBone = rightHandBone = null;
+    }
+
+    function onModelLoaded(gltf){
+      clearModel();
+      model = gltf.scene;
+      scene.add(model);
+      // find wolf3d_head mesh
+      model.traverse(obj=>{
+        if(obj.isMesh){
+          const name = (obj.name||'').toLowerCase();
+          if(name.includes('wolf3d_head') || name.includes('wolf3d_headmesh') || name.includes('wolf3d_head ')){
+            wolfMesh = obj;
+            // build dict: normalize keys to lowercase for easier matching
+            const d = {};
+            for(const k in (obj.morphTargetDictionary || {})){
+              d[k] = obj.morphTargetDictionary[k];
+            }
+            // store direct dict (case-sensitive keys) and we'll use case-insensitive lookup
+            wolfDict = d;
+            morphInfluences = obj.morphTargetInfluences;
+            log('Detected Wolf3D_Head mesh with ' + Object.keys(wolfDict).length + ' morphs.');
+          }
+        }
+        if(!headBone && obj.isBone){
+          const n = (obj.name||'').toLowerCase();
+          if(n.includes('head') || n.includes('neck')) headBone = obj;
+          if(n.includes('spine') && !spineBone) spineBone = obj;
+        }
+      });
+      // fallback: attempt to find a mesh named 'wolf3d_head' case-insensitively if not exact; we've handled above
+      if(!wolfMesh){
+        // try approximate: any mesh with viseme keys
+        model.traverse(obj=>{
+          if(!wolfMesh && obj.isMesh && obj.morphTargetDictionary){
+            const keys = Object.keys(obj.morphTargetDictionary).map(s=>s.toLowerCase());
+            if(keys.some(k => k.startsWith('viseme') || k.includes('jaw') || k.includes('mouth'))){
+              wolfMesh = obj;
+              wolfDict = Object.assign({}, obj.morphTargetDictionary);
+              morphInfluences = obj.morphTargetInfluences;
+              log('Using mesh "' + obj.name + '" as viseme target (detected viseme-like morphs).');
+            }
+          }
+        });
+      }
+
+      // find hand bones heuristically
+      const hands = findHandBones(model);
+      leftHandBone = hands.left;
+      rightHandBone = hands.right;
+      log('Head bone: ' + (headBone ? headBone.name : 'none') + ' | Left hand: ' + (leftHandBone ? leftHandBone.name : 'none') + ' | Right hand: ' + (rightHandBone ? rightHandBone.name : 'none'));
+      // set up animation mixer if clips are present
+      if(gltf.animations && gltf.animations.length){
+        mixer = new THREE.AnimationMixer(model);
+        // optionally play first clip in low weight
+        try {
+          const action = mixer.clipAction(gltf.animations[0]);
+          action.play();
+        } catch(e){}
+      }
+
+      // start natural behavior schedules
+      scheduleHeadTarget();
+      scheduleHandGesture();
+      scheduleVisemeBurstRandom();
+
+      // ensure running
+      clock.start();
+      running = true;
+      animate();
+    }
+
+    // Load from URL (appends morphTargets hint)
+    function loadFromUrl(raw){
+      if(!raw) return;
+      let url = raw.trim();
+      try {
+        const u = new URL(url);
+        if(!u.searchParams.has('morphTargets')){
+          u.searchParams.set('morphTargets','ARKit,Oculus Visemes');
+          url = u.toString();
+        }
+      } catch(e){}
+      loader.load(url, onModelLoaded, xhr=>{}, err=>{ log('GLB load error: ' + err.message || err); console.error(err); });
+    }
+
+    // Load from local file via File object
+    function loadFromFile(file){
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = (e)=>{
+        const ab = e.target.result;
+        loader.parse(ab, '', onModelLoaded, err=>{ log('Parse error: ' + (err.message||err)); });
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    // ---------- UI wiring ----------
+    document.getElementById('loadUrlBtn').addEventListener('click', ()=> {
+      const url = document.getElementById('glbUrl').value.trim();
+      if(!url) return alert('Paste a GLB URL or use file input.');
+      loadFromUrl(url);
+    });
+
+    document.getElementById('glbFile').addEventListener('change', (ev)=>{
+      const f = ev.target.files[0];
+      if(f){ loadFromFile(f); }
+    });
+
+    // JSON file loader
+    document.getElementById('jsonFile').addEventListener('change', (ev)=>{
+      const f = ev.target.files[0];
+      if(!f) return;
+      const reader = new FileReader();
+      reader.onload = (e)=>{
+        try {
+          const obj = JSON.parse(e.target.result);
+          loadVisemeSequence(obj);
+        } catch(err){
+          log('Invalid JSON: ' + err.message);
+        }
+      };
+      reader.readAsText(f);
+    });
+
+    // sample JSON object
+    const sampleVisemes = {
+      name: "hello_sample",
+      // times are in milliseconds from start
+      events: [
+        { t: 0,   v: "viseme_sil", i: 0.0, d: 120 },
+        { t: 120, v: "viseme_aa",  i: 0.9, d: 140 },
+        { t: 280, v: "viseme_nn",  i: 0.6, d: 120 },
+        { t: 420, v: "viseme_kk",  i: 0.5, d: 100 },
+        { t: 560, v: "viseme_aa",  i: 0.8, d: 140 },
+        { t: 720, v: "viseme_sil", i: 0.0, d: 120 },
+        { t: 920, v: "viseme_ff",  i: 0.7, d: 160 },
+        { t: 1100,v: "viseme_oo",  i: 0.8, d: 150 }, // note: 'viseme_o' or 'viseme_oo' will be attempted case-insensitively
+        { t: 1260,v: "jawOpen",    i: 0.6, d: 160 },
+        { t: 1440,v: "viseme_sil", i: 0.0, d: 160 }
+      ]
+    };
+
+    document.getElementById('loadSampleJson').addEventListener('click', ()=>{
+      loadVisemeSequence(JSON.parse(JSON.stringify(sampleVisemes)));
+    });
+
+    document.getElementById('downloadSampleJson').addEventListener('click', ()=>{
+      const blob = new Blob([JSON.stringify(sampleVisemes, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'sample_visemes.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById('playVisemes').addEventListener('click', ()=>{
+      const loop = document.getElementById('loopVisemes').checked;
+      playVisemeSequence(loop);
+    });
+    document.getElementById('stopVisemes').addEventListener('click', ()=> stopVisemePlayback());
+    document.getElementById('loopVisemes').addEventListener('change', (e)=> visemeLoop = e.target.checked);
+
+    // ---------- small helpers & adjustments ----------
+    // Keep renderer sized
+    window.addEventListener('resize', ()=>{
+      renderer.setSize(innerWidth, innerHeight);
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    // Expose small debug accessor
+    window.__rpmVisemeDebug = () => ({ model, wolfMesh, wolfDict, visemeSequence, visemeTasks });
+
+    // Helpful log at load
+    log('Ready. Load a GLB (URL or file), then load a viseme JSON or use sample and press Play.');
+
+    // Start running loop (but won't animate anything until model loads)
+    running = true;
+    clock.start();
+    animate();
+
+  </script>
+</body>
+</html>

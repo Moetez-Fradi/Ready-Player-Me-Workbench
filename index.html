@@ -1,20 +1,14 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Ready Player Me — quick editor (three.js)</title>
+  <title>RPM Viseme Player — Wolf3D_Head + Interviewer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    html,body { height:100%; margin:0; font-family: system-ui, sans-serif; background:#111; color:#eee; }
-    #ui { position: absolute; z-index: 10; left: 12px; top: 12px; width: 340px; max-height: 92vh; overflow:auto;
-          background: rgba(8,8,8,0.7); padding: 12px; border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,0.7);}
-    #canvas-holder { position:absolute; inset:0; }
-    label{ display:block; margin-top:8px; font-size:13px; color:#ccc;}
-    input[type="range"]{ width:100%; }
-    button{ margin-top:6px; padding:6px 10px; background:#1f6feb; color:white; border:0; border-radius:6px; cursor:pointer;}
-    .morph { margin-bottom:6px; }
-    .small { font-size:12px; color:#999; }
-    .row { display:flex; gap:8px; align-items:center;}
+    :root { --bg:#0b0c0d; --panel:#0f1316; --accent:#1f6feb; color-scheme: dark; }
+    html,body{height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,Arial;color:#e6eef8;}
   </style>
+  <!-- importmap to resolve three & addons -->
   <script type="importmap">
   {
     "imports": {
@@ -25,404 +19,463 @@
   </script>
 </head>
 <body>
-  <div id="ui">
-    <h3 style="margin:0 0 8px 0">RPM GLB editor — quick</h3>
-
-    <label>Avatar GLB URL (paste Ready Player Me .glb URL)</label>
-    <input id="url" type="text" placeholder="https://models.readyplayer.me/....glb" style="width:100%"/>
-
-    <div class="row">
-      <button id="loadUrl">Load URL (add morphTargets)</button>
-      <button id="loadFile">Load local .glb</button>
-      <input id="file" type="file" accept=".glb" style="display:none" />
-    </div>
-
-    <label class="small">Head controls</label>
-    <label>Yaw (left-right)</label><input id="headYaw" type="range" min="-1" max="1" step="0.01" value="0">
-    <label>Pitch (up-down)</label><input id="headPitch" type="range" min="-1" max="1" step="0.01" value="0">
-    <div class="row">
-      <button id="centerHead">Center Head</button>
-      <button id="autoLook">Auto look at mouse</button>
-    </div>
-
-    <label class="small">Animations</label>
-    <div class="row">
-      <button id="playAnim">Play first clip</button>
-      <button id="stopAnim">Stop</button>
-    </div>
-
-    <label class="small">Mic lip-sync</label>
-    <div class="row">
-      <button id="startMic">Start mic</button>
-      <button id="stopMic">Stop mic</button>
-    </div>
-
-    <hr style="border-color: rgba(255,255,255,0.06)">
-
-    <div id="morphsTitle" class="small">Morph targets (will appear after model load)</div>
-    <div id="morphs"></div>
-
-    <hr style="border-color: rgba(255,255,255,0.06)">
-    <div class="small">
-      <strong>Notes:</strong>
-      <ul>
-        <li>Some RPM GLBs are exported with only a small set of morphs by default — try loading with the <code>?morphTargets=ARKit,Oculus%20Visemes</code> query param (the "Load URL" button appends this automatically).</li>
-        <li>Use the sliders to experiment; use mic to drive mouth/jaw if available.</li>
-      </ul>
-    </div>
-    <div class="small" style="margin-top:6px">Console logs model structure for debugging.</div>
-  </div>
-
-  <div id="canvas-holder"></div>
-
+  <canvas id="canvas"></canvas>
   <script type="module">
-    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.module.js';
-    import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.153.0/examples/jsm/loaders/GLTFLoader.js';
-    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.153.0/examples/jsm/controls/OrbitControls.js';
-
-    // Scene
-    const container = document.getElementById('canvas-holder');
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x222222);
-
-    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    // ---------- Scene setup (adjusted for face and shoulders view) ----------
+    const canvas = document.getElementById('canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    container.appendChild(renderer.domElement);
-
-    const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 200);
-    camera.position.set(0,1.4,2.6);
-
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.localClippingEnabled = true; // Enable clipping for materials
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x141619);
+    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
+    camera.position.set(0, 1.6, 1.2); // Closer view focused on face
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0,1.4,0);
+    controls.target.set(0, 1.6, 0); // Target face height
     controls.update();
-
-    // lights
     const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
-    hemi.position.set(0,1,0);
+    hemi.position.set(0, 1, 0);
     scene.add(hemi);
     const dir = new THREE.DirectionalLight(0xffffff, 1.0);
     dir.position.set(1,2,1);
     scene.add(dir);
-
-    // ground (subtle)
-    const grid = new THREE.GridHelper(6, 12, 0x444444, 0x222222);
-    grid.position.y = 0;
-    scene.add(grid);
-
-    // state
+    // No grid for cleaner view
+    // ---------- State ----------
+    let model = null;
     let mixer = null;
-    let modelRoot = null;
-    let morphControls = {};
-    let morphMeshes = []; // meshes that have morphs
-    let headBone = null;
-    let clock = new THREE.Clock();
-
-    // UI refs
-    const urlEl = document.getElementById('url');
-    const loadUrlBtn = document.getElementById('loadUrl');
-    const loadFileBtn = document.getElementById('loadFile');
-    const fileInput = document.getElementById('file');
-    const morphsDiv = document.getElementById('morphs');
-    const morphsTitle = document.getElementById('morphsTitle');
-    const headYaw = document.getElementById('headYaw');
-    const headPitch = document.getElementById('headPitch');
-    const centerHeadBtn = document.getElementById('centerHead');
-    const autoLookBtn = document.getElementById('autoLook');
-    const playAnimBtn = document.getElementById('playAnim');
-    const stopAnimBtn = document.getElementById('stopAnim');
-    const startMicBtn = document.getElementById('startMic');
-    const stopMicBtn = document.getElementById('stopMic');
-
-    // GLTF loader
+    let clock = new THREE.Clock(false);
+    // Wolf3D head morphs
+    let wolfMesh = null;
+    let wolfDict = null; // name -> index
+    let morphInfluences = null;
+    // bones
+    let headBone = null, spineBone = null, leftHandBone = null, rightHandBone = null;
+    // custom animation states
+    let running = false;
+    const headState = { targetYaw:0, targetPitch:0, yaw:0, pitch:0, lerp:0.07 };
+    const breathState = { t:0 };
+    const handState = { left:{active:false, from:0, to:0, dur:0, t:0}, right:{active:false, from:0, to:0, dur:0, t:0} };
+    let eyeBlinkTimer = 0;
+    // viseme playback state
+    let visemeSequence = null; // {events: [ {t(ms), v(name), i(intensity 0..1), d(duration ms)} ], name?}
+    let visemeStartTime = 0;
+    let visemePlaying = false;
+    let visemeLoop = false;
+    let visemeIndex = 0; // next event to trigger
+    let visemeTasks = []; // active tasks with decay
+    // keep a stack for interrupted idle
+    let savedIdle = null;
+    // loader
     const loader = new GLTFLoader();
-
-    // helper to clear previous model
-    function clearModel() {
-      if (modelRoot) {
-        scene.remove(modelRoot);
-        modelRoot.traverse(obj => {
-          if (obj.geometry) obj.geometry.dispose();
-          if (obj.material) {
-            if (Array.isArray(obj.material)) obj.material.forEach(m=>m.dispose());
-            else obj.material.dispose();
-          }
-        });
-      }
-      modelRoot = null;
-      mixer = null;
-      morphControls = {};
-      morphMeshes = [];
-      headBone = null;
-      morphsDiv.innerHTML = '';
-      morphsTitle.textContent = 'Morph targets (will appear after model load)';
-      console.clear();
-    }
-
-    // find candidate head bone by name heuristics
-    function findHeadBone(root) {
+    // Clipping plane to show only face and shoulders (renders above y=1.2)
+    const clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.2);
+    // ---------- helper utilities ----------
+    function r(min,max){ return min + Math.random() * (max - min); }
+    function findBoneByNames(root, candidates){
       let found = null;
-      root.traverse(obj=>{
-        if (!found && obj.isBone) {
-          const n = (obj.name || '').toLowerCase();
-          if (n.includes('head') || n.includes('neck') || n.includes('spine')) {
-            found = obj;
-          }
+      root.traverse(o=>{
+        if(found) return;
+        if(o.isBone){
+          const n = (o.name||'').toLowerCase();
+          for(const c of candidates) if(n.includes(c)) { found = o; break; }
         }
       });
       return found;
     }
-
-    // create sliders for morph targets
-    function buildMorphUI(mesh, dict) {
-      const keys = Object.keys(dict);
-      keys.forEach(name=>{
-        const idx = dict[name];
-        const id = `${mesh.uuid}_${name}`;
-        const wrapper = document.createElement('div');
-        wrapper.className = 'morph';
-        wrapper.innerHTML = `
-          <label>${name}</label>
-          <input id="${id}" type="range" min="0" max="1" step="0.01" value="${mesh.morphTargetInfluences[idx] || 0}">
-        `;
-        morphsDiv.appendChild(wrapper);
-        const slider = document.getElementById(id);
-        slider.addEventListener('input', ()=> {
-          mesh.morphTargetInfluences[idx] = Number(slider.value);
-        });
-        // keep references so mic-lipsync can drive them
-        morphControls[name] = { mesh, idx, slider };
+    function findHandBones(root){
+      let left=null, right=null;
+      root.traverse(o=>{
+        if(!o.isBone) return;
+        const n = (o.name||'').toLowerCase();
+        if(!left && (n.includes('left') && (n.includes('hand') || n.includes('wrist') || n.includes('_l') || n.includes('.l')))) left = o;
+        if(!right && (n.includes('right') && (n.includes('hand') || n.includes('wrist') || n.includes('_r') || n.includes('.r')))) right = o;
       });
+      return {left,right};
     }
-
-    // load from URL (and append morphTargets param if missing)
-    async function loadFromUrl(rawUrl) {
-      clearModel();
-      if (!rawUrl) { alert('Paste a GLB url first'); return; }
-      // If the url is from Ready Player Me models CDN, append morphTargets hint (common fix)
-      let url = rawUrl;
-      try {
-        const u = new URL(rawUrl);
-        // if the morphTargets param isn't present, add it (ARKit + Oculus Visemes)
-        if (!u.searchParams.has('morphTargets')) {
-          u.searchParams.set('morphTargets', 'ARKit,Oculus Visemes');
-          url = u.toString();
-        }
-      } catch(e) {
-        // bad URL — still try the raw string
-        url = rawUrl;
-      }
-      console.log('Loading GLB from:', url);
-      loader.load(url, onGltf, (xhr)=> {
-        // progress
-      }, (err)=> { console.error('GLTF load error', err); alert('Failed to load GLB - see console');});
+    // ---------- scheduling natural behavior ----------
+    function scheduleHeadTarget(){
+      headState.targetYaw = r(-0.45, 0.45);
+      headState.targetPitch = r(-0.12, 0.18);
+      setTimeout(scheduleHeadTarget, r(1600, 3800));
     }
-
-    // load from local file
-    function loadFromFile(file) {
-      if (!file) return;
-      clearModel();
-      const reader = new FileReader();
-      reader.onload = (e)=>{
-        const arrayBuffer = e.target.result;
-        loader.parse(arrayBuffer, '', onGltf, (err)=> { console.error('parse err', err); alert('Failed to parse GLB'); });
-      };
-      reader.readAsArrayBuffer(file);
+    function scheduleHandGesture(){
+      const which = Math.random() < 0.6 ? 'right' : 'left';
+      const s = handState[which];
+      s.active = true;
+      s.from = s.beg || 0;
+      s.to = r(-0.8, 0.8);
+      s.dur = r(280, 900);
+      s.t = 0;
+      s.beg = s.to;
+      if(Math.random() < 0.18) setTimeout(scheduleHandGesture, r(140, 400));
+      setTimeout(scheduleHandGesture, r(900, 3000));
     }
-
-    // gltf onload
-    function onGltf(gltf) {
-      modelRoot = gltf.scene;
-      scene.add(modelRoot);
-      console.log('Model root:', modelRoot);
-      // find morph target meshes
-      modelRoot.traverse(obj=>{
-        if (obj.isMesh && obj.morphTargetDictionary) {
-          console.log('MESH morph targets:', obj.name, obj.morphTargetDictionary);
-          morphMeshes.push(obj);
-          buildMorphUI(obj, obj.morphTargetDictionary);
-        }
-        if (!headBone && obj.isBone) {
-          const n = (obj.name||'').toLowerCase();
-          if (n.includes('head') || n.includes('neck') || n.includes('head_end')) {
-            headBone = obj;
-          }
-        }
-      });
-
-      // fallback try heuristic
-      if (!headBone) headBone = findHeadBone(modelRoot);
-      console.log('Detected head bone:', headBone ? headBone.name : 'none');
-
-      // animations
-      if (gltf.animations && gltf.animations.length) {
-        mixer = new THREE.AnimationMixer(modelRoot);
-        console.log('Animations:', gltf.animations.map(a => a.name || '(clip)').join(','));
-        // keep action creation for play button
-        modelRoot.userData.animations = gltf.animations;
+    // Removed scheduleVisemeBurstRandom() to make idle less "weird"
+    // ---------- viseme playback (from loaded JSON) ----------
+    function loadVisemeSequence(obj){
+      if(!obj) { console.log('Empty viseme object.'); return; }
+      if(Array.isArray(obj.events)){
+        obj.events.sort((a,b)=>a.t - b.t);
+        visemeSequence = obj;
+        console.log('Viseme sequence loaded: ' + (obj.name || 'unnamed') + ' (' + obj.events.length + ' events)');
+      } else if(typeof obj.text === 'string'){
+        // user provided a speech JSON with text -> generate events
+        const generated = generateVisemeEventsFromText(obj.text, obj.rate || 1.0);
+        visemeSequence = { name: obj.name || 'generated_from_text', events: generated };
+        console.log('Generated viseme events from text (' + generated.length + ' events)');
       } else {
-        console.log('No animations in GLB.');
+        console.log('Unsupported JSON shape. Provide {events:[...]} or {text: "..."}');
       }
-
-      morphsTitle.textContent = Object.keys(morphControls).length ? 'Morph targets (edit below)' : 'No morph targets detected';
-      // center model and scale
-      // bounding box fit
-      const box = new THREE.Box3().setFromObject(modelRoot);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      const maxDim = Math.max(size.x,size.y,size.z);
-      const fitScale = 1.0 / maxDim * 1.5;
-      modelRoot.scale.setScalar(fitScale);
-      modelRoot.position.sub(center.multiplyScalar(fitScale));
-      modelRoot.position.y += 0.9; // lift a bit
     }
-
-    // animation controls
-    playAnimBtn.addEventListener('click', ()=>{
-      if (!mixer || !modelRoot || !modelRoot.userData.animations) { alert('No animations available'); return; }
-      const clip = modelRoot.userData.animations[0];
-      const action = mixer.clipAction(clip);
-      action.reset().play();
-    });
-    stopAnimBtn.addEventListener('click', ()=>{
-      if (!mixer) return;
-      mixer.stopAllAction();
-    });
-
-    // head controls update
-    function applyHeadControls() {
-      if (!headBone) return;
-      // use small angle multipliers
-      const yaw = Number(headYaw.value) * 0.8;   // left-right
-      const pitch = Number(headPitch.value) * 0.8; // up-down
-      // apply rotation in local space (slerp for smoothing)
-      headBone.rotation.y = yaw;
-      headBone.rotation.x = pitch;
+    function playVisemeSequence(loop=false){
+      if(!visemeSequence){ console.log('No viseme sequence loaded.'); return; }
+      visemeLoop = loop;
+      visemeIndex = 0;
+      visemeTasks.length = 0;
+      visemeStartTime = performance.now();
+      visemePlaying = true;
+      console.log('Viseme playback started' + (loop ? ' (looping)' : ''));
     }
-    headYaw.addEventListener('input', applyHeadControls);
-    headPitch.addEventListener('input', applyHeadControls);
-    centerHeadBtn.addEventListener('click', ()=>{
-      headYaw.value = 0; headPitch.value = 0; applyHeadControls();
-    });
-
-    // auto look at mouse
-    let autoLook = false;
-    autoLookBtn.addEventListener('click', ()=> {
-      autoLook = !autoLook;
-      autoLookBtn.textContent = autoLook ? 'Auto look: ON' : 'Auto look at mouse';
-    });
-    window.addEventListener('mousemove', (ev)=> {
-      if (!autoLook || !headBone) return;
-      const nx = (ev.clientX / window.innerWidth) * 2 - 1;
-      const ny = (ev.clientY / window.innerHeight) * 2 - 1;
-      headYaw.value = (nx) * 0.5;
-      headPitch.value = (-ny) * 0.5;
-      applyHeadControls();
-    });
-
-    // mic lip sync (very simple RMS -> mouth)
-    let audioCtx = null, mediaStream = null, analyzer = null, dataArray = null, micInterval = null;
-    async function startMic() {
-      if (mediaStream) return;
-      try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video:false });
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const src = audioCtx.createMediaStreamSource(mediaStream);
-        analyzer = audioCtx.createAnalyser();
-        analyzer.fftSize = 2048;
-        src.connect(analyzer);
-        dataArray = new Uint8Array(analyzer.fftSize);
-        micInterval = setInterval(()=> {
-          analyzer.getByteTimeDomainData(dataArray);
-          let sum = 0;
-          for (let i=0;i<dataArray.length;i++){
-            const v = (dataArray[i] - 128) / 128;
-            sum += v*v;
+    function stopVisemePlayback(){
+      visemePlaying = false;
+      console.log('Viseme playback stopped');
+    }
+    // ---------- applying viseme events per frame ----------
+    function updateVisemePlayer(dt){
+      if(visemePlaying && visemeSequence){
+        const now = performance.now();
+        const elapsed = now - visemeStartTime;
+        while(visemeIndex < visemeSequence.events.length && visemeSequence.events[visemeIndex].t <= elapsed){
+          const ev = visemeSequence.events[visemeIndex];
+          visemeTasks.push({
+            name: ev.v,
+            intensity: typeof ev.i === 'number' ? Math.min(1, Math.max(0, ev.i)) : 1.0,
+            timeLeft: typeof ev.d === 'number' ? ev.d : 140,
+            decay: (typeof ev.decay === 'number') ? ev.decay : 0.02
+          });
+          visemeIndex++;
+        }
+        if(visemeIndex >= visemeSequence.events.length && visemePlaying){
+          if(visemeLoop){
+            visemeIndex = 0;
+            visemeStartTime = performance.now();
+          } else {
+            visemePlaying = false;
+            console.log('Viseme sequence finished');
           }
-          const rms = Math.sqrt(sum / dataArray.length);
-          // map rms -> mouth morphs (try jawOpen or mouthOpen keys)
-          const weight = Math.min(1, rms * 5.0);
-          // try candidate names
-          const candidates = ['jawOpen','mouthOpen','mouth_open','MouthOpen','mouthOpenAlt','mouthOpen_'];
-          let applied = false;
-          for (const name in morphControls) {
-            // prefer jawOpen or mouthOpen keys
-            if (name.toLowerCase().includes('jaw') || name.toLowerCase().includes('mouth')) {
-              const ctrl = morphControls[name];
-              ctrl.mesh.morphTargetInfluences[ctrl.idx] = Math.max(ctrl.mesh.morphTargetInfluences[ctrl.idx], weight);
-              ctrl.slider.value = ctrl.mesh.morphTargetInfluences[ctrl.idx];
-              applied = true;
+        }
+      }
+      if(wolfMesh && wolfDict){
+        const influences = wolfMesh.morphTargetInfluences;
+        // small global decay so nothing sticks
+        for(let i=0;i<influences.length;i++){
+          influences[i] = Math.max(0, influences[i] - 0.015 * dt * 60);
+        }
+        for(let i = visemeTasks.length - 1; i >= 0; i--){
+          const t = visemeTasks[i];
+          const idx = getMorphIndexForName(t.name);
+          if(typeof idx === 'number'){
+            influences[idx] = Math.max(influences[idx] || 0, t.intensity);
+          }
+          t.timeLeft -= dt * 1000;
+          t.intensity = Math.max(0, t.intensity - t.decay * (dt * 60));
+          if(t.timeLeft <= 0 || t.intensity <= 0.01) visemeTasks.splice(i,1);
+        }
+      }
+    }
+    function getMorphIndexForName(name){
+      if(!wolfDict) return undefined;
+      const lower = (name||'').toLowerCase();
+      if(wolfDict[lower] !== undefined) return wolfDict[lower];
+      const keys = Object.keys(wolfDict);
+      for(const k of keys){ if(k.toLowerCase() === lower) return wolfDict[k]; }
+      if(!lower.startsWith('viseme_') && wolfDict['viseme_' + lower] !== undefined) return wolfDict['viseme_' + lower];
+      // try replacing common separators
+      const alt = lower.replace(/[^a-z0-9]+/g,'');
+      for(const k of keys){ if(k.toLowerCase().replace(/[^a-z0-9]+/g,'') === alt) return wolfDict[k]; }
+      return undefined;
+    }
+    // ---------- natural motions updates ----------
+    function updateHead(dt){
+      if(!headBone) return;
+      headState.yaw = THREE.MathUtils.lerp(headState.yaw, headState.targetYaw, headState.lerp);
+      headState.pitch = THREE.MathUtils.lerp(headState.pitch, headState.targetPitch, headState.lerp);
+      breathState.t += dt * 0.9;
+      const bob = Math.sin(breathState.t * 0.9) * 0.015;
+      if(spineBone) spineBone.rotation.x = bob;
+      headBone.rotation.y = headState.yaw;
+      headBone.rotation.x = headState.pitch;
+    }
+    function updateHands(dt){
+      const apply = (bone, state)=>{
+        if(!bone || !state) return;
+        if(state.active){
+          state.t += dt * 1000;
+          const alpha = Math.min(1, state.t / state.dur);
+          const eased = alpha*alpha*(3-2*alpha);
+          const val = THREE.MathUtils.lerp(state.from, state.to, eased);
+          bone.rotation.x = val;
+          if(alpha >= 1) state.active = false;
+        } else {
+          bone.rotation.x = THREE.MathUtils.lerp(bone.rotation.x, 0, dt*2.4);
+        }
+      };
+      apply(leftHandBone, handState.left);
+      apply(rightHandBone, handState.right);
+    }
+    function updateEyesAndBlink(dt){
+      eyeBlinkTimer -= dt * 1000;
+      if(eyeBlinkTimer <= 0){
+        eyeBlinkTimer = r(2200, 6500);
+        const leftIdx = getMorphIndexForName('eyeBlinkLeft');
+        const rightIdx = getMorphIndexForName('eyeBlinkRight');
+        if(leftIdx !== undefined || rightIdx !== undefined){
+          visemeTasks.push({ name: 'eyeBlinkLeft', intensity: 1.0, timeLeft: 120, decay: 0.03 });
+          visemeTasks.push({ name: 'eyeBlinkRight', intensity: 1.0, timeLeft: 120, decay: 0.03 });
+        }
+      }
+    }
+    // ---------- speech and viseme generation ----------
+    // Heuristic mapping from text to viseme names. Not perfect but yields natural-looking animation when using TTS.
+    const letterMap = [
+      {pattern: /th/ig, v: 'viseme_TH'},
+      {pattern: /ch|tʃ|tch/ig, v: 'viseme_CH'},
+      {pattern: /sh|ʃ/ig, v: 'viseme_SS'},
+      {pattern: /f|v/ig, v: 'viseme_FF'},
+      {pattern: /p|b|m/ig, v: 'viseme_PP'},
+      {pattern: /k|g/ig, v: 'viseme_kk'},
+      {pattern: /r/ig, v: 'viseme_RR'},
+      {pattern: /n|ng/ig, v: 'viseme_nn'},
+      {pattern: /ee|i|ie/ig, v: 'viseme_I'},
+      {pattern: /ea|e(?![aiou])/ig, v: 'viseme_E'},
+      {pattern: /ou|oo|u/ig, v: 'viseme_U'},
+      {pattern: /o|au/ig, v: 'viseme_O'},
+      {pattern: /a|aa|ah/ig, v: 'viseme_aa'}
+    ];
+    function generateVisemeEventsFromText(text, speed=1.0){
+      // Collapse whitespace, remove markup
+      text = (text||'').replace(/\s+/g,' ').trim();
+      const tokens = [];
+      let i = 0;
+      // produce rough syllable-like tokens by splitting on vowels clusters
+      const wordParts = text.split(/(\s+|[^\w'])/).filter(x=>x && !/\s+/.test(x));
+      let t = 0;
+      const baseDur = 120 / speed; // ms per token baseline
+      for(const part of wordParts){
+        // find matches sequentially in part
+        let matched = false;
+        for(const m of letterMap){
+          const re = new RegExp(m.pattern);
+          if(re.test(part)){
+            // we will create one event per match occurrence
+            const matches = [...part.matchAll(m.pattern)];
+            for(const mm of matches){
+              const dur = baseDur * (1 + Math.random()*0.5);
+              tokens.push({t: Math.round(t), v: m.v, i: 0.85 - Math.random()*0.25, d: Math.round(dur)});
+              t += dur * 0.7; // overlap a bit
             }
+            matched = true;
           }
-          // if no suitable names, try setting all morphs lightly
-          if (!applied) {
-            for (const nm in morphControls) {
-              const ctrl = morphControls[nm];
-              ctrl.mesh.morphTargetInfluences[ctrl.idx] = Math.max(ctrl.mesh.morphTargetInfluences[ctrl.idx], weight*0.2);
-              ctrl.slider.value = ctrl.mesh.morphTargetInfluences[ctrl.idx];
-            }
+        }
+        if(!matched){
+          // fallback: for consonant-heavy parts, use jawOpen or viseme_sil
+          const dur = baseDur * (0.6 + Math.random()*0.6);
+          tokens.push({t: Math.round(t), v: 'jawOpen', i: 0.5 + Math.random()*0.35, d: Math.round(dur)});
+          t += dur * 0.9;
+        }
+        // small pause between words
+        t += baseDur * 0.45;
+      }
+      // final silence
+      tokens.push({t: Math.round(t + 40), v: 'viseme_sil', i: 0, d: 120});
+      return tokens;
+    }
+    // Predefined animations for special markers like [hemmm]
+    const predefinedAnimations = {
+      'hemmm': [
+        { t: 0, v: 'viseme_PP', i: 0.8, d: 200 }, // Closed mouth for "hmm"
+        { t: 150, v: 'viseme_PP', i: 0.6, d: 150 },
+        { t: 0, v: 'browInnerUp', i: 0.7, d: 350 }, // Thinking expression
+        { t: 100, v: 'eyeLookOutLeft', i: 0.5, d: 250 }, // Eye movement
+        { t: 200, v: 'eyeLookOutRight', i: 0.5, d: 250 }
+      ]
+      // Add more predefined actions as needed
+    };
+    function getSequenceDuration(seq) {
+      if (!seq.length) return 0;
+      const last = seq.reduce((max, ev) => ev.t > max.t ? ev : max, seq[0]);
+      return last.t + last.d;
+    }
+    let synthUtterance = null;
+    function speakTextWithVisemes(text, options={}) {
+      if(!text) return;
+      const useVoice = true; // Always use TTS
+      const interruptIdle = true; // Always interrupt
+      let cleanText = '';
+      let cumulativeT = 0;
+      let allEvents = [];
+      const parts = text.split(/(\[.*?\])/g);
+      for (const part of parts) {
+        if (part.startsWith('[') && part.endsWith(']')) {
+          const action = part.slice(1, -1).trim().toLowerCase();
+          if (predefinedAnimations[action]) {
+            const seq = predefinedAnimations[action].map(ev => ({ ...ev, t: ev.t + cumulativeT }));
+            allEvents.push(...seq);
+            cumulativeT += getSequenceDuration(predefinedAnimations[action]);
           }
-        }, 60);
-        console.log('Mic started');
-      } catch(e) {
-        console.warn('Microphone access denied or not available', e);
-        alert('Could not start mic: ' + (e.message || e));
+        } else {
+          cleanText += part;
+          const events = generateVisemeEventsFromText(part, options.rate || 1.0);
+          const shifted = events.map(ev => ({ ...ev, t: ev.t + cumulativeT }));
+          allEvents.push(...shifted);
+          cumulativeT += getSequenceDuration(events);
+        }
+      }
+      // generate events
+      const seq = { name: 'speech_gen', events: allEvents };
+      // optionally interrupt idle and save
+      if(interruptIdle && visemeSequence === null){ savedIdle = {visemeSequence:null}; }
+      // play the viseme sequence and speak
+      visemeSequence = seq;
+      playVisemeSequence(false);
+      if(useVoice && 'speechSynthesis' in window){
+        window.speechSynthesis.cancel();
+        synthUtterance = new SpeechSynthesisUtterance(cleanText);
+        synthUtterance.rate = options.rate || 1.0;
+        synthUtterance.pitch = options.pitch || 1.0;
+        synthUtterance.onstart = () => { console.log('TTS started'); }
+        synthUtterance.onend = () => {
+          console.log('TTS ended');
+          // allow visemes to finish then clear
+          setTimeout(()=>{ visemePlaying = false; visemeSequence = null; visemeTasks.length = 0; }, 120);
+        }
+        synthUtterance.onerror = (e) => { console.log('TTS error: ' + (e.error || e.message || e)); }
+        window.speechSynthesis.speak(synthUtterance);
+      } else {
+        // If no TTS, still play visemes and simulate timing
+        visemeStartTime = performance.now();
+        visemePlaying = true;
+        setTimeout(()=>{ visemePlaying = false; visemeSequence = null; visemeTasks.length = 0; console.log('Simulated speech finished'); }, Math.max(800, allEvents[allEvents.length-1].t + allEvents[allEvents.length-1].d + 60));
       }
     }
-    function stopMic(){
-      if (micInterval) { clearInterval(micInterval); micInterval = null; }
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(t=>t.stop());
-        mediaStream = null;
-      }
-      if (audioCtx) {
-        audioCtx.close(); audioCtx = null;
-      }
-      console.log('Mic stopped');
+    function stopSpeech(){
+      if(synthUtterance) window.speechSynthesis.cancel();
+      visemePlaying = false;
+      visemeSequence = null;
+      visemeTasks.length = 0;
+      console.log('Speech stopped');
     }
-    startMicBtn.addEventListener('click', startMic);
-    stopMicBtn.addEventListener('click', stopMic);
-
-    // load handlers
-    loadUrlBtn.addEventListener('click', ()=> loadFromUrl(urlEl.value.trim()));
-    loadFileBtn.addEventListener('click', ()=> fileInput.click());
-    fileInput.addEventListener('change', (ev)=> {
-      const f = ev.target.files[0];
-      if (f) loadFromFile(f);
-    });
-
-    // handle drop
-    window.addEventListener('dragover', e=>e.preventDefault());
-    window.addEventListener('drop', e=> {
-      e.preventDefault();
-      if (e.dataTransfer.files && e.dataTransfer.files.length) {
-        loadFromFile(e.dataTransfer.files[0]);
-      }
-    });
-
-    // animate loop
+    // ---------- animation loop ----------
     function animate(){
+      if(!running) return;
       requestAnimationFrame(animate);
       const dt = clock.getDelta();
-      if (mixer) mixer.update(dt);
+      if(mixer) mixer.update(dt);
+      updateHead(dt);
+      updateHands(dt);
+      updateEyesAndBlink(dt);
+      updateVisemePlayer(dt);
       renderer.render(scene, camera);
     }
-    animate();
-
-    // responsiveness
-    window.addEventListener('resize', ()=>{
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
+    // ---------- model loading & detection ----------
+    function clearModel(){
+      if(model) {
+        scene.remove(model);
+        model.traverse(o=>{
+          if(o.geometry) o.geometry.dispose();
+          if(o.material){ if(Array.isArray(o.material)) o.material.forEach(m=>m.dispose()); else o.material.dispose(); }
+        });
+      }
+      model = null; mixer = null; wolfMesh = null; wolfDict = null; morphInfluences = null;
+      headBone = spineBone = leftHandBone = rightHandBone = null;
+    }
+    function onModelLoaded(gltf){
+      clearModel();
+      model = gltf.scene;
+      // Apply clipping plane to all materials
+      model.traverse(obj => {
+        if (obj.isMesh && obj.material) {
+          if (Array.isArray(obj.material)) {
+            obj.material.forEach(mat => { mat.clippingPlanes = [clipPlane]; mat.needsUpdate = true; });
+          } else {
+            obj.material.clippingPlanes = [clipPlane];
+            obj.material.needsUpdate = true;
+          }
+        }
+      });
+      scene.add(model);
+      model.traverse(obj=>{
+        if(obj.isMesh){
+          const name = (obj.name||'').toLowerCase();
+          if(name.includes('wolf3d_head') || name.includes('wolf3d_headmesh') || name.includes('wolf3d_head ')){
+            wolfMesh = obj;
+            const d = {};
+            for(const k in (obj.morphTargetDictionary || {})) d[k] = obj.morphTargetDictionary[k];
+            wolfDict = d;
+            morphInfluences = obj.morphTargetInfluences;
+            console.log('Detected Wolf3D_Head mesh with ' + Object.keys(wolfDict).length + ' morphs.');
+          }
+        }
+        if(!headBone && obj.isBone){
+          const n = (obj.name||'').toLowerCase();
+          if(n.includes('head') || n.includes('neck')) headBone = obj;
+          if(n.includes('spine') && !spineBone) spineBone = obj;
+        }
+      });
+      if(!wolfMesh){
+        model.traverse(obj=>{
+          if(!wolfMesh && obj.isMesh && obj.morphTargetDictionary){
+            const keys = Object.keys(obj.morphTargetDictionary).map(s=>s.toLowerCase());
+            if(keys.some(k => k.startsWith('viseme') || k.includes('jaw') || k.includes('mouth'))){
+              wolfMesh = obj;
+              wolfDict = Object.assign({}, obj.morphTargetDictionary);
+              morphInfluences = obj.morphTargetInfluences;
+              console.log('Using mesh "' + obj.name + '" as viseme target (detected viseme-like morphs).');
+            }
+          }
+        });
+      }
+      const hands = findHandBones(model);
+      leftHandBone = hands.left;
+      rightHandBone = hands.right;
+      console.log('Head bone: ' + (headBone ? headBone.name : 'none') + ' | Left hand: ' + (leftHandBone ? leftHandBone.name : 'none') + ' | Right hand: ' + (rightHandBone ? rightHandBone.name : 'none'));
+      if(gltf.animations && gltf.animations.length){
+        mixer = new THREE.AnimationMixer(model);
+        try { const action = mixer.clipAction(gltf.animations[0]); action.play(); } catch(e){}
+      }
+      scheduleHeadTarget();
+      scheduleHandGesture();
+      // Removed scheduleVisemeBurstRandom()
+      clock.start();
+      running = true;
+      animate();
+      // After model loaded, load and speak from JSON
+      fetch('./speech.json')
+        .then(res => res.json())
+        .then(obj => {
+          if (obj.text) {
+            speakTextWithVisemes(obj.text, { rate: obj.rate || 1.0 });
+          } else {
+            console.log('No text in speech.json');
+          }
+        })
+        .catch(err => console.error('Error loading speech.json:', err));
+    }
+    // Auto-load char.glb
+    loader.load('./char.glb', onModelLoaded, undefined, err => {
+      console.error('GLB load error:', err);
     });
-
-    // expose some debug helpers
-    window.__rpmDebug = {
-      scene, renderer, loader, lastModel: ()=>modelRoot, morphControls
-    };
-
-    // Prefill demo URL tip
-    urlEl.placeholder = 'Paste a Ready Player Me .glb URL here (or drop a local .glb)';
+    // ---------- small helpers & adjustments ----------
+    window.addEventListener('resize', ()=>{ renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+    window.__rpmVisemeDebug = () => ({ model, wolfMesh, wolfDict, visemeSequence, visemeTasks });
+    console.log('Ready. Loading char.glb and speech.json automatically.');
+    running = true;
+    clock.start();
+    animate();
   </script>
 </body>
 </html>
