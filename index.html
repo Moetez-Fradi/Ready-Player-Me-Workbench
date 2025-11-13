@@ -1,0 +1,428 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Ready Player Me — quick editor (three.js)</title>
+  <style>
+    html,body { height:100%; margin:0; font-family: system-ui, sans-serif; background:#111; color:#eee; }
+    #ui { position: absolute; z-index: 10; left: 12px; top: 12px; width: 340px; max-height: 92vh; overflow:auto;
+          background: rgba(8,8,8,0.7); padding: 12px; border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,0.7);}
+    #canvas-holder { position:absolute; inset:0; }
+    label{ display:block; margin-top:8px; font-size:13px; color:#ccc;}
+    input[type="range"]{ width:100%; }
+    button{ margin-top:6px; padding:6px 10px; background:#1f6feb; color:white; border:0; border-radius:6px; cursor:pointer;}
+    .morph { margin-bottom:6px; }
+    .small { font-size:12px; color:#999; }
+    .row { display:flex; gap:8px; align-items:center;}
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.153.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="ui">
+    <h3 style="margin:0 0 8px 0">RPM GLB editor — quick</h3>
+
+    <label>Avatar GLB URL (paste Ready Player Me .glb URL)</label>
+    <input id="url" type="text" placeholder="https://models.readyplayer.me/....glb" style="width:100%"/>
+
+    <div class="row">
+      <button id="loadUrl">Load URL (add morphTargets)</button>
+      <button id="loadFile">Load local .glb</button>
+      <input id="file" type="file" accept=".glb" style="display:none" />
+    </div>
+
+    <label class="small">Head controls</label>
+    <label>Yaw (left-right)</label><input id="headYaw" type="range" min="-1" max="1" step="0.01" value="0">
+    <label>Pitch (up-down)</label><input id="headPitch" type="range" min="-1" max="1" step="0.01" value="0">
+    <div class="row">
+      <button id="centerHead">Center Head</button>
+      <button id="autoLook">Auto look at mouse</button>
+    </div>
+
+    <label class="small">Animations</label>
+    <div class="row">
+      <button id="playAnim">Play first clip</button>
+      <button id="stopAnim">Stop</button>
+    </div>
+
+    <label class="small">Mic lip-sync</label>
+    <div class="row">
+      <button id="startMic">Start mic</button>
+      <button id="stopMic">Stop mic</button>
+    </div>
+
+    <hr style="border-color: rgba(255,255,255,0.06)">
+
+    <div id="morphsTitle" class="small">Morph targets (will appear after model load)</div>
+    <div id="morphs"></div>
+
+    <hr style="border-color: rgba(255,255,255,0.06)">
+    <div class="small">
+      <strong>Notes:</strong>
+      <ul>
+        <li>Some RPM GLBs are exported with only a small set of morphs by default — try loading with the <code>?morphTargets=ARKit,Oculus%20Visemes</code> query param (the "Load URL" button appends this automatically).</li>
+        <li>Use the sliders to experiment; use mic to drive mouth/jaw if available.</li>
+      </ul>
+    </div>
+    <div class="small" style="margin-top:6px">Console logs model structure for debugging.</div>
+  </div>
+
+  <div id="canvas-holder"></div>
+
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.module.js';
+    import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.153.0/examples/jsm/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.153.0/examples/jsm/controls/OrbitControls.js';
+
+    // Scene
+    const container = document.getElementById('canvas-holder');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x222222);
+
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera.position.set(0,1.4,2.6);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0,1.4,0);
+    controls.update();
+
+    // lights
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
+    hemi.position.set(0,1,0);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(1,2,1);
+    scene.add(dir);
+
+    // ground (subtle)
+    const grid = new THREE.GridHelper(6, 12, 0x444444, 0x222222);
+    grid.position.y = 0;
+    scene.add(grid);
+
+    // state
+    let mixer = null;
+    let modelRoot = null;
+    let morphControls = {};
+    let morphMeshes = []; // meshes that have morphs
+    let headBone = null;
+    let clock = new THREE.Clock();
+
+    // UI refs
+    const urlEl = document.getElementById('url');
+    const loadUrlBtn = document.getElementById('loadUrl');
+    const loadFileBtn = document.getElementById('loadFile');
+    const fileInput = document.getElementById('file');
+    const morphsDiv = document.getElementById('morphs');
+    const morphsTitle = document.getElementById('morphsTitle');
+    const headYaw = document.getElementById('headYaw');
+    const headPitch = document.getElementById('headPitch');
+    const centerHeadBtn = document.getElementById('centerHead');
+    const autoLookBtn = document.getElementById('autoLook');
+    const playAnimBtn = document.getElementById('playAnim');
+    const stopAnimBtn = document.getElementById('stopAnim');
+    const startMicBtn = document.getElementById('startMic');
+    const stopMicBtn = document.getElementById('stopMic');
+
+    // GLTF loader
+    const loader = new GLTFLoader();
+
+    // helper to clear previous model
+    function clearModel() {
+      if (modelRoot) {
+        scene.remove(modelRoot);
+        modelRoot.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) {
+            if (Array.isArray(obj.material)) obj.material.forEach(m=>m.dispose());
+            else obj.material.dispose();
+          }
+        });
+      }
+      modelRoot = null;
+      mixer = null;
+      morphControls = {};
+      morphMeshes = [];
+      headBone = null;
+      morphsDiv.innerHTML = '';
+      morphsTitle.textContent = 'Morph targets (will appear after model load)';
+      console.clear();
+    }
+
+    // find candidate head bone by name heuristics
+    function findHeadBone(root) {
+      let found = null;
+      root.traverse(obj=>{
+        if (!found && obj.isBone) {
+          const n = (obj.name || '').toLowerCase();
+          if (n.includes('head') || n.includes('neck') || n.includes('spine')) {
+            found = obj;
+          }
+        }
+      });
+      return found;
+    }
+
+    // create sliders for morph targets
+    function buildMorphUI(mesh, dict) {
+      const keys = Object.keys(dict);
+      keys.forEach(name=>{
+        const idx = dict[name];
+        const id = `${mesh.uuid}_${name}`;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'morph';
+        wrapper.innerHTML = `
+          <label>${name}</label>
+          <input id="${id}" type="range" min="0" max="1" step="0.01" value="${mesh.morphTargetInfluences[idx] || 0}">
+        `;
+        morphsDiv.appendChild(wrapper);
+        const slider = document.getElementById(id);
+        slider.addEventListener('input', ()=> {
+          mesh.morphTargetInfluences[idx] = Number(slider.value);
+        });
+        // keep references so mic-lipsync can drive them
+        morphControls[name] = { mesh, idx, slider };
+      });
+    }
+
+    // load from URL (and append morphTargets param if missing)
+    async function loadFromUrl(rawUrl) {
+      clearModel();
+      if (!rawUrl) { alert('Paste a GLB url first'); return; }
+      // If the url is from Ready Player Me models CDN, append morphTargets hint (common fix)
+      let url = rawUrl;
+      try {
+        const u = new URL(rawUrl);
+        // if the morphTargets param isn't present, add it (ARKit + Oculus Visemes)
+        if (!u.searchParams.has('morphTargets')) {
+          u.searchParams.set('morphTargets', 'ARKit,Oculus Visemes');
+          url = u.toString();
+        }
+      } catch(e) {
+        // bad URL — still try the raw string
+        url = rawUrl;
+      }
+      console.log('Loading GLB from:', url);
+      loader.load(url, onGltf, (xhr)=> {
+        // progress
+      }, (err)=> { console.error('GLTF load error', err); alert('Failed to load GLB - see console');});
+    }
+
+    // load from local file
+    function loadFromFile(file) {
+      if (!file) return;
+      clearModel();
+      const reader = new FileReader();
+      reader.onload = (e)=>{
+        const arrayBuffer = e.target.result;
+        loader.parse(arrayBuffer, '', onGltf, (err)=> { console.error('parse err', err); alert('Failed to parse GLB'); });
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    // gltf onload
+    function onGltf(gltf) {
+      modelRoot = gltf.scene;
+      scene.add(modelRoot);
+      console.log('Model root:', modelRoot);
+      // find morph target meshes
+      modelRoot.traverse(obj=>{
+        if (obj.isMesh && obj.morphTargetDictionary) {
+          console.log('MESH morph targets:', obj.name, obj.morphTargetDictionary);
+          morphMeshes.push(obj);
+          buildMorphUI(obj, obj.morphTargetDictionary);
+        }
+        if (!headBone && obj.isBone) {
+          const n = (obj.name||'').toLowerCase();
+          if (n.includes('head') || n.includes('neck') || n.includes('head_end')) {
+            headBone = obj;
+          }
+        }
+      });
+
+      // fallback try heuristic
+      if (!headBone) headBone = findHeadBone(modelRoot);
+      console.log('Detected head bone:', headBone ? headBone.name : 'none');
+
+      // animations
+      if (gltf.animations && gltf.animations.length) {
+        mixer = new THREE.AnimationMixer(modelRoot);
+        console.log('Animations:', gltf.animations.map(a => a.name || '(clip)').join(','));
+        // keep action creation for play button
+        modelRoot.userData.animations = gltf.animations;
+      } else {
+        console.log('No animations in GLB.');
+      }
+
+      morphsTitle.textContent = Object.keys(morphControls).length ? 'Morph targets (edit below)' : 'No morph targets detected';
+      // center model and scale
+      // bounding box fit
+      const box = new THREE.Box3().setFromObject(modelRoot);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x,size.y,size.z);
+      const fitScale = 1.0 / maxDim * 1.5;
+      modelRoot.scale.setScalar(fitScale);
+      modelRoot.position.sub(center.multiplyScalar(fitScale));
+      modelRoot.position.y += 0.9; // lift a bit
+    }
+
+    // animation controls
+    playAnimBtn.addEventListener('click', ()=>{
+      if (!mixer || !modelRoot || !modelRoot.userData.animations) { alert('No animations available'); return; }
+      const clip = modelRoot.userData.animations[0];
+      const action = mixer.clipAction(clip);
+      action.reset().play();
+    });
+    stopAnimBtn.addEventListener('click', ()=>{
+      if (!mixer) return;
+      mixer.stopAllAction();
+    });
+
+    // head controls update
+    function applyHeadControls() {
+      if (!headBone) return;
+      // use small angle multipliers
+      const yaw = Number(headYaw.value) * 0.8;   // left-right
+      const pitch = Number(headPitch.value) * 0.8; // up-down
+      // apply rotation in local space (slerp for smoothing)
+      headBone.rotation.y = yaw;
+      headBone.rotation.x = pitch;
+    }
+    headYaw.addEventListener('input', applyHeadControls);
+    headPitch.addEventListener('input', applyHeadControls);
+    centerHeadBtn.addEventListener('click', ()=>{
+      headYaw.value = 0; headPitch.value = 0; applyHeadControls();
+    });
+
+    // auto look at mouse
+    let autoLook = false;
+    autoLookBtn.addEventListener('click', ()=> {
+      autoLook = !autoLook;
+      autoLookBtn.textContent = autoLook ? 'Auto look: ON' : 'Auto look at mouse';
+    });
+    window.addEventListener('mousemove', (ev)=> {
+      if (!autoLook || !headBone) return;
+      const nx = (ev.clientX / window.innerWidth) * 2 - 1;
+      const ny = (ev.clientY / window.innerHeight) * 2 - 1;
+      headYaw.value = (nx) * 0.5;
+      headPitch.value = (-ny) * 0.5;
+      applyHeadControls();
+    });
+
+    // mic lip sync (very simple RMS -> mouth)
+    let audioCtx = null, mediaStream = null, analyzer = null, dataArray = null, micInterval = null;
+    async function startMic() {
+      if (mediaStream) return;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video:false });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = audioCtx.createMediaStreamSource(mediaStream);
+        analyzer = audioCtx.createAnalyser();
+        analyzer.fftSize = 2048;
+        src.connect(analyzer);
+        dataArray = new Uint8Array(analyzer.fftSize);
+        micInterval = setInterval(()=> {
+          analyzer.getByteTimeDomainData(dataArray);
+          let sum = 0;
+          for (let i=0;i<dataArray.length;i++){
+            const v = (dataArray[i] - 128) / 128;
+            sum += v*v;
+          }
+          const rms = Math.sqrt(sum / dataArray.length);
+          // map rms -> mouth morphs (try jawOpen or mouthOpen keys)
+          const weight = Math.min(1, rms * 5.0);
+          // try candidate names
+          const candidates = ['jawOpen','mouthOpen','mouth_open','MouthOpen','mouthOpenAlt','mouthOpen_'];
+          let applied = false;
+          for (const name in morphControls) {
+            // prefer jawOpen or mouthOpen keys
+            if (name.toLowerCase().includes('jaw') || name.toLowerCase().includes('mouth')) {
+              const ctrl = morphControls[name];
+              ctrl.mesh.morphTargetInfluences[ctrl.idx] = Math.max(ctrl.mesh.morphTargetInfluences[ctrl.idx], weight);
+              ctrl.slider.value = ctrl.mesh.morphTargetInfluences[ctrl.idx];
+              applied = true;
+            }
+          }
+          // if no suitable names, try setting all morphs lightly
+          if (!applied) {
+            for (const nm in morphControls) {
+              const ctrl = morphControls[nm];
+              ctrl.mesh.morphTargetInfluences[ctrl.idx] = Math.max(ctrl.mesh.morphTargetInfluences[ctrl.idx], weight*0.2);
+              ctrl.slider.value = ctrl.mesh.morphTargetInfluences[ctrl.idx];
+            }
+          }
+        }, 60);
+        console.log('Mic started');
+      } catch(e) {
+        console.warn('Microphone access denied or not available', e);
+        alert('Could not start mic: ' + (e.message || e));
+      }
+    }
+    function stopMic(){
+      if (micInterval) { clearInterval(micInterval); micInterval = null; }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(t=>t.stop());
+        mediaStream = null;
+      }
+      if (audioCtx) {
+        audioCtx.close(); audioCtx = null;
+      }
+      console.log('Mic stopped');
+    }
+    startMicBtn.addEventListener('click', startMic);
+    stopMicBtn.addEventListener('click', stopMic);
+
+    // load handlers
+    loadUrlBtn.addEventListener('click', ()=> loadFromUrl(urlEl.value.trim()));
+    loadFileBtn.addEventListener('click', ()=> fileInput.click());
+    fileInput.addEventListener('change', (ev)=> {
+      const f = ev.target.files[0];
+      if (f) loadFromFile(f);
+    });
+
+    // handle drop
+    window.addEventListener('dragover', e=>e.preventDefault());
+    window.addEventListener('drop', e=> {
+      e.preventDefault();
+      if (e.dataTransfer.files && e.dataTransfer.files.length) {
+        loadFromFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    // animate loop
+    function animate(){
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+      if (mixer) mixer.update(dt);
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // responsiveness
+    window.addEventListener('resize', ()=>{
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    // expose some debug helpers
+    window.__rpmDebug = {
+      scene, renderer, loader, lastModel: ()=>modelRoot, morphControls
+    };
+
+    // Prefill demo URL tip
+    urlEl.placeholder = 'Paste a Ready Player Me .glb URL here (or drop a local .glb)';
+  </script>
+</body>
+</html>
