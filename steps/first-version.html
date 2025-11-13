@@ -6,8 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     :root { --bg:#0b0c0d; --panel:#0f1316; --accent:#1f6feb; color-scheme: dark; }
-    html,body{  overflow: hidden;   /* prevents both vertical and horizontal scroll */
-height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,Arial;color:#e6eef8;}
+    html,body{height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,Arial;color:#e6eef8;}
   </style>
   <!-- importmap to resolve three & addons -->
   <script type="importmap">
@@ -20,13 +19,7 @@ height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,A
   </script>
 </head>
 <body>
-  <div id="sceneContainer" style="width:600px; height:400px; border:1px solid #555; margin:20px;">
   <canvas id="canvas"></canvas>
-</div>
-<div id="otherContent">
-  <h1>Other stuff on the page</h1>
-  <p>Buttons, text, whatever you want.</p>
-</div>
   <script type="module">
     import * as THREE from "three";
     import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -35,18 +28,14 @@ height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,A
     const canvas = document.getElementById('canvas');
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(innerWidth, innerHeight);
     renderer.localClippingEnabled = true; // Enable clipping for materials
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x141619);
-    const container = document.getElementById('sceneContainer');
-    renderer.setSize(container.clientWidth, container.clientHeight);
-    const camera = new THREE.PerspectiveCamera(40, container.clientWidth / container.clientHeight, 0.05, 200);
+    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
     camera.position.set(0, 1.6, 1.2); // Closer view focused on face
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 1.6, 0); // Target face height
-    controls.enableRotate = false;   // disable rotation
-    controls.enableZoom = false;     // disable zoom
-    controls.enablePan = false;      // disable panning
     controls.update();
     const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
     hemi.position.set(0, 1, 0);
@@ -83,7 +72,7 @@ height:100%;margin:0;background:var(--bg);font-family:Inter,system-ui,Segoe UI,A
     // loader
     const loader = new GLTFLoader();
     // Clipping plane to show only face and shoulders (renders above y=1.2)
-    const clipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 0), -1.2);
+    const clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.2);
     // ---------- helper utilities ----------
     function r(min,max){ return min + Math.random() * (max - min); }
     function findBoneByNames(root, candidates){
